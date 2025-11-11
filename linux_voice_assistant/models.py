@@ -1,5 +1,6 @@
 """Shared models."""
 
+import asyncio
 import json
 import logging
 from dataclasses import asdict, dataclass, field
@@ -8,11 +9,12 @@ from pathlib import Path
 from queue import Queue
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Union
 
+from .event_bus import EventBus
+
 if TYPE_CHECKING:
     from pymicro_wakeword import MicroWakeWord
     from pyopen_wakeword import OpenWakeWord
 
-    from .entity import ESPHomeEntity, MediaPlayerEntity
     from .entity import ESPHomeEntity, MediaPlayerEntity, ThinkingSoundEntity
     from .mpv_player import MpvMediaPlayer
     from .satellite import VoiceSatelliteProtocol
@@ -33,16 +35,22 @@ class AvailableWakeWord:
     trained_languages: List[str]
     wake_word_path: Path
 
-    def load(self) -> "Union[MicroWakeWord, OpenWakeWord]":
+    def load(self, libtensorflowlite_c_path: Path) -> "Union[MicroWakeWord, OpenWakeWord]":
         if self.type == WakeWordType.MICRO_WAKE_WORD:
             from pymicro_wakeword import MicroWakeWord
 
-            return MicroWakeWord.from_config(config_path=self.wake_word_path)
+            return MicroWakeWord.from_config(
+                config_path=self.wake_word_path,
+                libtensorflowlite_c_path=libtensorflowlite_c_path
+            )
 
         if self.type == WakeWordType.OPEN_WAKE_WORD:
             from pyopen_wakeword import OpenWakeWord
 
-            oww_model = OpenWakeWord.from_model(model_path=self.wake_word_path)
+            oww_model = OpenWakeWord.from_model(
+                model_path=self.wake_word_path,
+                libtensorflowlite_c_path=libtensorflowlite_c_path
+            )
             setattr(oww_model, "wake_word", self.wake_word)
 
             return oww_model
@@ -54,9 +62,13 @@ class AvailableWakeWord:
 class Preferences:
     active_wake_words: List[str] = field(default_factory=list)
     thinking_sound: int = 0  # 0 = disabled, 1 = enabled
+    volume_level: float = 1.0
+    num_leds: int = 3
+
 
 @dataclass
 class ServerState:
+    # --- Fields WITHOUT default values ---
     name: str
     mac_address: str
     audio_queue: "Queue[Optional[bytes]]"
@@ -72,13 +84,20 @@ class ServerState:
     timer_finished_sound: str
     preferences: Preferences
     preferences_path: Path
+    libtensorflowlite_c_path: Path
+    event_bus: EventBus
+    loop: asyncio.AbstractEventLoop
+    oww_melspectrogram_path: Path
+    oww_embedding_path: Path
 
+    # --- Fields WITH default values ---
     media_player_entity: "Optional[MediaPlayerEntity]" = None
     satellite: "Optional[VoiceSatelliteProtocol]" = None
     thinking_sound_entity: "Optional[ThinkingSoundEntity]" = None
     wake_words_changed: bool = False
     refractory_seconds: float = 2.0
     thinking_sound_enabled: bool = False
+    mic_muted: bool = False
 
     def save_preferences(self) -> None:
         """Save preferences as JSON."""
