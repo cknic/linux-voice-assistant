@@ -14,3 +14,9 @@ def get_mac() -> str:
 def call_all(*callables: Optional[Callable[[], None]]) -> None:
     for item in filter(None, callables):
         item()
+
+
+def is_arm() -> bool:
+    """Check if running on ARM architecture."""
+    import platform
+    return platform.machine().lower() in ('aarch64', 'armv7l', 'armv8l', 'arm64')
