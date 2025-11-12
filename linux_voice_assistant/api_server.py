@@ -7,7 +7,6 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, List, Optional
 
 # pylint: disable=no-name-in-module
-from aioesphomeapi._frame_helper.plain_text import varuint_to_bytes
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     DisconnectRequest,
     DisconnectResponse,
@@ -18,6 +17,26 @@ from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
 )
 from aioesphomeapi.core import MESSAGE_TYPE_TO_PROTO
 from google.protobuf import message
+
+def _varuint_to_bytes(value: int) -> bytes:
+    """Convert a varuint to bytes."""
+    if value <= 0x7F:
+        return bytes((value,))
+
+    result = bytearray()
+    while value:
+        temp = value & 0x7F
+        value >>= 7
+        if value:
+            result.append(temp | 0x80)
+        else:
+            result.append(temp)
+
+    return bytes(result)
+
+
+varuint_to_bytes = _varuint_to_bytes
+
 
 PROTO_TO_MESSAGE_TYPE = {v: k for k, v in MESSAGE_TYPE_TO_PROTO.items()}
 

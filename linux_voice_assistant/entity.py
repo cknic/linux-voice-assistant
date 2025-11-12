@@ -15,7 +15,6 @@ from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
 )
 from aioesphomeapi.model import (
     MediaPlayerCommand,
-    MediaPlayerEntityFeature,
     MediaPlayerState,
     EntityCategory,
 )
