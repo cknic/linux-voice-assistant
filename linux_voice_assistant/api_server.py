@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, List, Optional
 
 # pylint: disable=no-name-in-module
-from aioesphomeapi._frame_helper.packets import make_plain_text_packets
+from aioesphomeapi._frame_helper.plain_text import varuint_to_bytes
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     DisconnectRequest,
     DisconnectResponse,
@@ -78,8 +78,18 @@ class APIServer(asyncio.Protocol):
             (PROTO_TO_MESSAGE_TYPE[msg.__class__], msg.SerializeToString())
             for msg in msgs
         ]
-        packet_bytes = make_plain_text_packets(packets)
-        self._writelines(packet_bytes)
+        # Manually create plain text packets using the new API
+        out: list[bytes] = []
+        for packet in packets:
+            type_: int = packet[0]
+            data: bytes = packet[1]
+            out.append(b"\0")
+            out.append(varuint_to_bytes(len(data)))
+            out.append(varuint_to_bytes(type_))
+            if data:
+                out.append(data)
+        
+        self._writelines(out)
 
     def connection_made(self, transport) -> None:
         self._transport = transport
