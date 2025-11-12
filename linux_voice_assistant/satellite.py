@@ -33,7 +33,11 @@ from google.protobuf import message
 
 from .api_server import APIServer
 from .entity import MediaPlayerEntity, ThinkingSoundEntity
+<<<<<<< HEAD
 from .models import ServerState
+=======
+from .models import AvailableWakeWord, ServerState, WakeWordType
+>>>>>>> omar/main
 from .util import call_all
 
 _LOGGER = logging.getLogger(__name__)
@@ -102,8 +106,13 @@ class VoiceSatelliteProtocol(APIServer):
         self._tts_played = False
         self._continue_conversation = False
         self._timer_finished = False
+<<<<<<< HEAD
         self._is_speaking = False
         self._run_finished = False
+=======
+        self._processing = False
+        self._external_wake_words: Dict[str, VoiceAssistantExternalWakeWord] = {}
+>>>>>>> omar/main
 
     def _set_thinking_sound_enabled(self, new_state: bool) -> None:
         """Set thinking sound enabled state."""
@@ -115,6 +124,10 @@ class VoiceSatelliteProtocol(APIServer):
         else:
             _LOGGER.debug("Thinking sound disabled")
         self.state.save_preferences()
+<<<<<<< HEAD
+=======
+        
+>>>>>>> omar/main
 
     def handle_voice_event(
         self, event_type: VoiceAssistantEventType, data: Dict[str, str]
