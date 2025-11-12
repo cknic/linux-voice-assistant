@@ -1,109 +1,110 @@
-"""Shared models."""
+"""Data models."""
 
-import asyncio
-import json
-import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from queue import Queue
-from typing import TYPE_CHECKING, Dict, List, Optional, Set, Union
-
-from .event_bus import EventBus
+from typing import TYPE_CHECKING, Dict, List, Optional, Set
 
 if TYPE_CHECKING:
-    from pymicro_wakeword import MicroWakeWord
-    from pyopen_wakeword import OpenWakeWord
-
-    from .entity import ESPHomeEntity, MediaPlayerEntity, ThinkingSoundEntity
+    from asyncio import AbstractEventLoop
+    from .event_bus import EventBus
+    from .microwakeword import MicroWakeWord
     from .mpv_player import MpvMediaPlayer
-    from .satellite import VoiceSatelliteProtocol
-
-_LOGGER = logging.getLogger(__name__)
+    from .openwakeword import OpenWakeWord
 
 
 class WakeWordType(str, Enum):
-    MICRO_WAKE_WORD = "micro"
-    OPEN_WAKE_WORD = "openWakeWord"
+    """Type of wake word model."""
+
+    MICRO = "micro"
+    OPENWAKEWORD = "openwakeword"
 
 
 @dataclass
 class AvailableWakeWord:
+    """Information about an available wake word."""
+
     id: str
     type: WakeWordType
     wake_word: str
     trained_languages: List[str]
     wake_word_path: Path
 
-    def load(self, libtensorflowlite_c_path: Path) -> "Union[MicroWakeWord, OpenWakeWord]":
-        if self.type == WakeWordType.MICRO_WAKE_WORD:
-            from pymicro_wakeword import MicroWakeWord
+    def load(self, libtensorflowlite_c_path: Path):
+        """Load wake word model."""
+        if self.type == WakeWordType.MICRO:
+            from .microwakeword import MicroWakeWord
 
             return MicroWakeWord.from_config(
-                config_path=self.wake_word_path,
-                libtensorflowlite_c_path=libtensorflowlite_c_path
+                self.wake_word_path, libtensorflowlite_c_path
             )
 
-        if self.type == WakeWordType.OPEN_WAKE_WORD:
-            from pyopen_wakeword import OpenWakeWord
+        if self.type == WakeWordType.OPENWAKEWORD:
+            from .openwakeword import OpenWakeWord
 
-            oww_model = OpenWakeWord.from_model(
-                model_path=self.wake_word_path,
-                libtensorflowlite_c_path=libtensorflowlite_c_path
+            return OpenWakeWord.from_config(
+                self.wake_word_path, libtensorflowlite_c_path
             )
-            setattr(oww_model, "wake_word", self.wake_word)
 
-            return oww_model
-
-        raise ValueError(f"Unexpected wake word type: {self.type}")
+        raise ValueError(f"Unsupported wake word type: {self.type}")
 
 
 @dataclass
 class Preferences:
+    """User preferences."""
+
     active_wake_words: List[str] = field(default_factory=list)
-    thinking_sound: int = 0  # 0 = disabled, 1 = enabled
     volume_level: float = 1.0
+    thinking_sound: int = 0
     num_leds: int = 3
 
 
 @dataclass
 class ServerState:
-    # --- Fields WITHOUT default values ---
+    """Server state."""
+
     name: str
     mac_address: str
     audio_queue: "Queue[Optional[bytes]]"
-    entities: "List[ESPHomeEntity]"
-    available_wake_words: "Dict[str, AvailableWakeWord]"
-    wake_words: "Dict[str, Union[MicroWakeWord, OpenWakeWord]]"
-    active_wake_words: Set[str]
-    stop_word: "MicroWakeWord"
-    music_player: "MpvMediaPlayer"
-    tts_player: "MpvMediaPlayer"
-    wakeup_sound: str
-    processing_sound: str
-    timer_finished_sound: str
-    preferences: Preferences
-    preferences_path: Path
-    libtensorflowlite_c_path: Path
-    event_bus: EventBus
-    loop: asyncio.AbstractEventLoop
-    oww_melspectrogram_path: Path
-    oww_embedding_path: Path
-
-    # --- Fields WITH default values ---
-    media_player_entity: "Optional[MediaPlayerEntity]" = None
-    satellite: "Optional[VoiceSatelliteProtocol]" = None
-    thinking_sound_entity: "Optional[ThinkingSoundEntity]" = None
+    entities: list
+    available_wake_words: Dict[str, AvailableWakeWord]
+    wake_words: Dict[str, "MicroWakeWord | OpenWakeWord"]
+    active_wake_words: Set[str] = field(default_factory=set)
     wake_words_changed: bool = False
+    stop_word: Optional["MicroWakeWord"] = None
+    music_player: Optional["MpvMediaPlayer"] = None
+    tts_player: Optional["MpvMediaPlayer"] = None
+    wakeup_sound: str = ""
+    processing_sound: str = ""
+    timer_finished_sound: str = ""
+    preferences: Preferences = field(default_factory=Preferences)
+    preferences_path: Optional[Path] = None
+    satellite: Optional["VoiceSatelliteProtocol"] = None
+    media_player_entity: Optional["MediaPlayerEntity"] = None
+    thinking_sound_entity: Optional["ThinkingSoundEntity"] = None
+    event_bus: Optional["EventBus"] = None
+    loop: Optional["AbstractEventLoop"] = None
+    libtensorflowlite_c_path: Optional[Path] = None
+    oww_melspectrogram_path: Optional[Path] = None
+    oww_embedding_path: Optional[Path] = None
     refractory_seconds: float = 2.0
     thinking_sound_enabled: bool = False
-    mic_muted: bool = False
 
     def save_preferences(self) -> None:
-        """Save preferences as JSON."""
-        _LOGGER.debug("Saving preferences: %s", self.preferences_path)
-        self.preferences_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.preferences_path, "w", encoding="utf-8") as preferences_file:
+        """Save preferences to disk."""
+        import json
+
+        if self.preferences_path is None:
+            return
+
+        with open(self.preferences_path, "w", encoding="utf-8") as prefs_file:
             json.dump(
-                asdict(self.preferences), preferences_file, ensure_ascii=False, indent=4
+                {
+                    "active_wake_words": self.preferences.active_wake_words,
+                    "volume_level": self.preferences.volume_level,
+                    "thinking_sound": self.preferences.thinking_sound,
+                    "num_leds": self.preferences.num_leds,
+                },
+                prefs_file,
             )

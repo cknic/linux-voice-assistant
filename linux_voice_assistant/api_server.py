@@ -1,161 +1,161 @@
-"""Partial ESPHome server implementation."""
+"""ESPHome API server."""
 
 import asyncio
 import logging
-from abc import abstractmethod
+from collections import defaultdict
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, List, Optional
+from typing import Callable, Optional
+
+from google.protobuf import message
 
 # pylint: disable=no-name-in-module
-from aioesphomeapi._frame_helper.packets import make_plain_text_packets
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
+    ConnectRequest,
+    ConnectResponse,
     DisconnectRequest,
     DisconnectResponse,
+    GetTimeRequest,
+    GetTimeResponse,
     HelloRequest,
     HelloResponse,
     PingRequest,
     PingResponse,
 )
-from aioesphomeapi.core import MESSAGE_TYPE_TO_PROTO
-from google.protobuf import message
-
-PROTO_TO_MESSAGE_TYPE = {v: k for k, v in MESSAGE_TYPE_TO_PROTO.items()}
 
 _LOGGER = logging.getLogger(__name__)
 
 
+def _make_message_serializer() -> (
+    tuple[
+        Callable[[type], int],
+        Callable[[message.Message], bytes],
+        Callable[[int, bytes], message.Message],
+    ]
+):
+    """Create message serializer and deserializer."""
+    # Message type -> id
+    message_type_to_id: dict[type, int] = {}
+
+    # Message id -> type
+    id_to_message_type: dict[int, type] = {}
+
+    # pylint: disable=protected-access
+    for msg_id, msg_type in message._sym_db._symbols.items():
+        message_type_to_id[msg_type] = msg_id
+        id_to_message_type[msg_id] = msg_type
+
+    def get_message_id(msg_type: type) -> int:
+        """Get id for a message type."""
+        return message_type_to_id[msg_type]
+
+    def serialize(msg: message.Message) -> bytes:
+        """Serialize a protobuf message."""
+        msg_id = message_type_to_id[type(msg)]
+        msg_data = msg.SerializeToString()
+        header = bytes(
+            [0x00, (len(msg_data) >> 8) & 0xFF, len(msg_data) & 0xFF, msg_id]
+        )
+        return header + msg_data
+
+    def deserialize(msg_id: int, msg_data: bytes) -> message.Message:
+        """Deserialize a protobuf message."""
+        msg_type = id_to_message_type[msg_id]
+        msg = msg_type()
+        msg.ParseFromString(msg_data)
+        return msg
+
+    return get_message_id, serialize, deserialize
+
+
+_GET_MESSAGE_ID, _SERIALIZE, _DESERIALIZE = _make_message_serializer()
+
+
 class APIServer(asyncio.Protocol):
+    """ESPHome API server protocol implementation."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str):
         self.name = name
+        self.transport: Optional[asyncio.Transport] = None
+        self._message_handlers: dict[int, list] = defaultdict(list)
+        self._buffer = bytes()
 
-        self._buffer: Optional[bytes] = None
-        self._buffer_len: int = 0
-        self._pos: int = 0
-        self._transport = None
-        self._writelines = None
-
-    @abstractmethod
-    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
-        pass
-
-    def process_packet(self, msg_type: int, packet_data: bytes) -> None:
-        msg_class = MESSAGE_TYPE_TO_PROTO[msg_type]
-        msg_inst = msg_class.FromString(packet_data)
-
-        if isinstance(msg_inst, HelloRequest):
-            self.send_messages(
-                [
-                    HelloResponse(
-                        api_version_major=1,
-                        api_version_minor=10,
-                        name=self.name,
-                    )
-                ]
-            )
-            return
-
-        if isinstance(msg_inst, DisconnectRequest):
-            self.send_messages([DisconnectResponse()])
-            _LOGGER.debug("Disconnect requested")
-            if self._transport:
-                self._transport.close()
-                self._transport = None
-                self._writelines = None
-        elif isinstance(msg_inst, PingRequest):
-            self.send_messages([PingResponse()])
-        elif msgs := self.handle_message(msg_inst):
-            if isinstance(msgs, message.Message):
-                msgs = [msgs]
-
-            self.send_messages(msgs)
-
-    def send_messages(self, msgs: List[message.Message]):
-        if self._writelines is None:
-            return
-
-        packets = [
-            (PROTO_TO_MESSAGE_TYPE[msg.__class__], msg.SerializeToString())
-            for msg in msgs
-        ]
-        packet_bytes = make_plain_text_packets(packets)
-        self._writelines(packet_bytes)
-
-    def connection_made(self, transport) -> None:
-        self._transport = transport
-        self._writelines = transport.writelines
+    def connection_made(self, transport):
+        """Handle new connection."""
+        self.transport = transport
+        _LOGGER.debug("Client connected")
 
     def data_received(self, data: bytes):
-        if self._buffer is None:
-            self._buffer = data
-            self._buffer_len = len(data)
-        else:
-            self._buffer += data
-            self._buffer_len += len(data)
+        """Handle received data."""
+        self._buffer += data
 
-        while self._buffer_len >= 3:
-            self._pos = 0
-            if (preamble := self._read_varuint()) != 0x00:
-                _LOGGER.error("Incorrect preamble: %s", preamble)
-                return
-
-            if (length := self._read_varuint()) == -1:
-                _LOGGER.error("Incorrect length: %s", length)
-                return
-
-            if (msg_type := self._read_varuint()) == -1:
-                _LOGGER.error("Incorrect message type: %s", msg_type)
-                return
-
-            if length == 0:
-                self._remove_from_buffer()
-                self.process_packet(msg_type, b"")
+        while len(self._buffer) >= 4:
+            # Check preamble
+            if self._buffer[0] != 0x00:
+                _LOGGER.warning("Invalid preamble: %s", self._buffer[0])
+                self._buffer = self._buffer[1:]
                 continue
 
-            if (packet_data := self._read(length)) is None:
-                return
+            # Get message length and type
+            msg_length = (self._buffer[1] << 8) | self._buffer[2]
+            msg_id = self._buffer[3]
 
-            self._remove_from_buffer()
-            self.process_packet(msg_type, packet_data)
+            if len(self._buffer) < (4 + msg_length):
+                # Wait for more data
+                break
 
-    def _read(self, length: int) -> bytes | None:
-        new_pos = self._pos + length
-        if self._buffer_len < new_pos:
-            return None
-        original_pos = self._pos
-        self._pos = new_pos
-        if TYPE_CHECKING:
-            assert self._buffer is not None, "Buffer should be set"
-        cstr = self._buffer
-        return cstr[original_pos:new_pos]
+            # Extract message
+            msg_data = self._buffer[4 : 4 + msg_length]
+            self._buffer = self._buffer[4 + msg_length :]
+
+            try:
+                msg = _DESERIALIZE(msg_id, msg_data)
+                _LOGGER.debug("Received: %s", msg)
+                self._handle_message(msg)
+            except Exception:
+                _LOGGER.exception("Error deserializing message")
+
+    def _handle_message(self, msg: message.Message):
+        """Handle a received message."""
+        try:
+            if isinstance(msg, HelloRequest):
+                self.send_messages([HelloResponse(server_info=self.name, api_version_minor=1, api_version_major=1)])
+            elif isinstance(msg, ConnectRequest):
+                self.send_messages([ConnectResponse(invalid_password=False)])
+            elif isinstance(msg, DisconnectRequest):
+                self.send_messages([DisconnectResponse()])
+                if self.transport:
+                    self.transport.close()
+            elif isinstance(msg, PingRequest):
+                self.send_messages([PingResponse()])
+            elif isinstance(msg, GetTimeRequest):
+                import time
+                self.send_messages([GetTimeResponse(epoch_seconds=int(time.time()))])
+            else:
+                # Let subclass handle it
+                responses = self.handle_message(msg)
+                if responses:
+                    self.send_messages(responses)
+        except Exception:
+            _LOGGER.exception("Error handling message: %s", msg)
+
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        """Handle message (override in subclass)."""
+        return []
+
+    def send_messages(self, messages: Iterable[message.Message]):
+        """Send messages to client."""
+        if not self.transport:
+            return
+
+        for msg in messages:
+            try:
+                data = _SERIALIZE(msg)
+                self.transport.write(data)
+                _LOGGER.debug("Sent: %s", msg)
+            except Exception:
+                _LOGGER.exception("Error sending message: %s", msg)
 
     def connection_lost(self, exc):
-        self._transport = None
-        self._writelines = None
-
-    def _read_varuint(self) -> int:
-        if not self._buffer:
-            return -1
-
-        result = 0
-        bitpos = 0
-        cstr = self._buffer
-        while self._buffer_len > self._pos:
-            val = cstr[self._pos]
-            self._pos += 1
-            result |= (val & 0x7F) << bitpos
-            if (val & 0x80) == 0:
-                return result
-            bitpos += 7
-        return -1
-
-    def _remove_from_buffer(self) -> None:
-        end_of_frame_pos = self._pos
-        self._buffer_len -= end_of_frame_pos
-        if self._buffer_len == 0:
-            self._buffer = None
-            return
-        if TYPE_CHECKING:
-            assert self._buffer is not None, "Buffer should be set"
-        cstr = self._buffer
-        self._buffer = cstr[end_of_frame_pos : self._buffer_len + end_of_frame_pos]
+        """Handle connection loss."""
+        _LOGGER.debug("Client disconnected")
+        self.transport = None

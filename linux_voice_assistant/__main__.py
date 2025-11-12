@@ -169,7 +169,7 @@ async def main() -> None:
     )
     parser.add_argument(
         "--timer-finished-sound", 
-        default=str(_SOUNDS_DIR / "timer_finished.wav"),
+        default=str(_SOUNDS_DIR / "timer_finished.flac"),
         help="Sound to play when timer finishes"
     )
     

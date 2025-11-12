@@ -245,7 +245,7 @@ class VoiceSatelliteProtocol(APIServer):
                 max_active_wake_words=2,
             )
             _LOGGER.info("Connected to Home Assistant")
-            self.state.event_bus.publish("ha_connected")
+            self.state.event_bus.publish("ha_connected", {})
         elif isinstance(msg, VoiceAssistantSetConfiguration):
             active_wake_words: Set[str] = set()
             for wake_word_id in msg.active_wake_words:
