@@ -12,8 +12,6 @@ from google.protobuf import message
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     ConnectRequest,
     ConnectResponse,
-    AuthenticationRequest,
-    AuthenticationResponse,
     DisconnectRequest,
     DisconnectResponse,
     GetTimeRequest,
