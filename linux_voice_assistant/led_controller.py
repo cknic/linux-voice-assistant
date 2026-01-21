@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from typing import Any, Optional, Tuple
+import subprocess
 import sys
 
 _LOGGER = logging.getLogger(__name__)
@@ -246,6 +247,24 @@ class LedController(EventHandler):
             # For other errors, just log and continue
             _LOGGER.exception("Error during XVF3800 operation '%s'", operation)
         self.current_task = asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+    def _play_beep_sound(self, sound_file: str) -> None:
+        """Play a beep sound using mpv in a fire-and-forget subprocess"""
+        try:
+            import os
+            sound_path = os.path.join(os.path.dirname(__file__), "..", "sounds", sound_file)
+            if os.path.exists(sound_path):
+                # Play sound in background, detached from this process
+                subprocess.Popen(
+                    ["mpv", "--no-terminal", "--volume=30", sound_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+            else:
+                _LOGGER.debug("Sound file not found: %s", sound_path)
+        except Exception as e:
+            _LOGGER.debug("Could not play beep sound: %s", e)
 
     def _apply_state_effect(self, state_name: str, publish_state: bool = True):
         # Mute has highest precedence over any voice/idle effects.
@@ -708,6 +727,8 @@ class LedController(EventHandler):
 
     @subscribe
     def mic_muted(self, data: dict):
+        # Play mute beep sound
+        self._play_beep_sound("mute.wav")
         # Mute overlay has precedence over any other state.
         self._mic_is_muted = True
         # When muted, show a solid dim red on all backends.
@@ -715,6 +736,8 @@ class LedController(EventHandler):
 
     @subscribe
     def mic_unmuted(self, data: dict):
+        # Play unmute beep sound
+        self._play_beep_sound("unmute.wav")
         # Clear overlay and return to idle (or other future state logic).
         self._mic_is_muted = False
         self._apply_state_effect("idle")
